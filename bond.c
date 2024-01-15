@@ -13,6 +13,9 @@
 #define LAG_MODE_LACP 4
 #define BOND_TYPE "bond"
 
+#define NLMSG_TAIL(nmsg) \
+	((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
+
 struct bond {
 	struct nl_sock *sock;
 	struct nl_cache *cache;
@@ -93,35 +96,122 @@ int bond_init(struct bond *bond)
 	return ret;
 }
 
-
-int _fill_default_info(struct nl_msg *msg)
+int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
+	      int alen)
 {
-	const char *bond_type = BOND_TYPE;
-	struct nlattr *tb[IFLA_MAX + 1] = {};
+	int len = RTA_LENGTH(alen);
+	struct rtattr *rta;
 
-	tb[IFLA_LINKINFO] = nla_nest_start(msg, IFLA_LINKINFO);
-	if (!tb[IFLA_LINKINFO]) {
-		printf("ERROR: failed to start nested args\n");
+	if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > maxlen) {
+		fprintf(stderr,
+			"addattr_l ERROR: message exceeded bound of %d\n",
+			maxlen);
 		return -1;
 	}
+	rta = NLMSG_TAIL(n);
+	rta->rta_type = type;
+	rta->rta_len = len;
+	if (alen)
+		memcpy(RTA_DATA(rta), data, alen);
+	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+	return 0;
+}
 
-	nla_put_string(msg, IFLA_INFO_KIND, bond_type);
-	// nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LOADBALANCE);
-	nla_nest_end(msg, tb[IFLA_LINKINFO]);
+struct rtattr *addattr_nest(struct nlmsghdr *n, int maxlen, int type)
+{
+	struct rtattr *nest = NLMSG_TAIL(n);
+
+	addattr_l(n, maxlen, type, NULL, 0);
+	return nest;
+}
+
+int addattr_nest_end(struct nlmsghdr *n, struct rtattr *nest)
+{
+	nest->rta_len = (void *)NLMSG_TAIL(n) - (void *)nest;
+	return n->nlmsg_len;
+}
+
+struct rtnl_link *build_link_by_ifname(const char *ifname)
+{
+	struct rtnl_link *link = NULL;
+
+	link = rtnl_link_bond_alloc();
+	if (!link) {
+		printf("ERROR: failed to allocate link\n");
+		return NULL;
+	}
+	rtnl_link_set_name(link, ifname);
+
+	return link;
+}
+
+struct nl_msg *build_msg(int nlmsg_type, int flags, struct rtnl_link *link)
+{
+	int ret;
+	struct nl_msg *msg = NULL;
+	struct ifinfomsg ifi = {
+		.ifi_family = AF_UNSPEC,
+		.ifi_index = rtnl_link_get_ifindex(link),
+	};
+
+	msg = nlmsg_alloc_simple(nlmsg_type, flags);
+	if (!msg)
+		return NULL;
+
+	ret = nlmsg_append(msg, &ifi, sizeof(ifi), NLMSG_ALIGNTO);
+	if (ret < 0)
+		return NULL;
+
+	ret = rtnl_link_fill_info(msg, link);
+	if (ret < 0)
+		return NULL;
+
+	return msg;
+}
+
+int _fill_default_info(struct nl_msg *msg, const char *ifname)
+{
+	int ret;
+	int iflatype;
+	struct rtattr *linkinfo, *data;
+	char *type = BOND_TYPE;
+
+	linkinfo = nla_nest_start(msg, IFLA_LINKINFO);
+	{
+		nla_put_string(msg, IFLA_INFO_KIND, type);
+
+		data = nla_nest_start(msg, IFLA_INFO_DATA);
+		{
+			nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LOADBALANCE);
+		}
+		nla_nest_end(msg, data);
+	}
+	nla_nest_end(msg, linkinfo);
 
 	return 0;
 }
 
 
+int sendNL(struct bond *bond, struct nl_msg *msg)
+{
+	int status;
+
+	status = nl_send_auto(bond->sock, msg);
+	if (status < 0) {
+		perror("Cannot talk to rtnetlink");
+		return -1;
+	}
+}
+
 int fill_default(struct nl_msg *msg)
 {
-	int ret;
+	// int ret;
 
-	ret = _fill_default_info(msg);
-	if (ret < 0) {
-		printf("ERROR: failed to fill default info\n");
-		return ret;
-	}
+	// ret = _fill_default_info(msg);
+	// if (ret < 0) {
+	// 	printf("ERROR: failed to fill default info\n");
+	// 	return ret;
+	// }
 
 	return 0;
 }
@@ -130,52 +220,25 @@ int fill_default(struct nl_msg *msg)
 int main(void)
 {
 	int ret;
-	char *bond_name = "bond1";
-	struct nl_msg *msg = NULL;
 	struct bond *bond = NULL;
+	struct nl_msg *msg;
+	struct rtnl_link *link = NULL;
+	const char *ifname = "bond1";
 
 	bond = bond_alloc();
-	if (!bond) {
-		printf("ERROR: failed to alloc bond structure\n");
+	bond_init(bond);
+
+	link = build_link_by_ifname(ifname);
+	printf("%d\n", rtnl_link_get_ifindex(link));
+	msg = build_msg(RTM_NEWLINK, NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL, link);
+	_fill_default_info(msg, link);
+	sendNL(bond, msg);
+
+	ret = nl_recvmsgs_default(bond->sock);
+	if (ret != 0) {
+		printf("Failed to recv NL mesgs: %s", nl_geterror(ret));
 		return -1;
 	}
-
-	ret = bond_init(bond);
-	if (ret < 0) {
-		printf("ERROR: failed to init bond\n");
-		free(bond);
-		goto bond_free;
-	}
-
-	// struct rtnl_link *link = rtnl_link_bond_add(bond->sock, bond_name, link);
-
-	msg = nlmsg_alloc_simple(RTM_NEWLINK, NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL);
-	if (!msg) {
-		printf("ERROR: failed to alloc message\n");
-		goto bond_free;
-	}
-
-	ret = fill_default(msg);
-	if (ret < 0) {
-		printf("ERROR: failed to fill default info\n");
-		goto msg_free;
-	}
-	// ret = rtnl_link_fill_info(msg, link);
-	// if (ret < 0) {
-	// 	printf("ERROR: failed to fill info\n");
-	// 	return -1;
-	// }
-
-	ret = nl_send_sync(bond->sock, msg);
-	if (ret < 0) {
-		printf("ERROR: failed to send msg\n");
-		goto msg_free;
-	}
-
-msg_free:
-	nlmsg_free(msg);
-bond_free:
-	free(bond);
 
 	return 0;
 }
