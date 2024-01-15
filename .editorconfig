@@ -1,0 +1,34 @@
+
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+
+[*.{c,h}]
+indent_style = tab
+indent_size = 8
+
+[*.yang]
+indent_style = space
+indent_size = 2
+
+[*.lua]
+indent_style = tab
+indent_size = 4
+keep_one_space_between_table_and_bracket = false
+align_call_args = true
+align_function_params = true
+continuous_assign_statement_align_to_equal_sign = false
+continuous_assign_table_field_align_to_equal_sign = false
+max_line_length = 90
+space_around_table_field_list = false
+
+[*.mib]
+indent_style = space
+indent_size = 4
+
+[*.{am,ac}]
+indent_style = tab
+indent_size = 8
