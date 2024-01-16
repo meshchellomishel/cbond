@@ -11,6 +11,7 @@
 #include <net/if.h>
 #include <linux/types.h>
 #include <event2/event.h>
+#include <errno.h>
 
 
 #define LAG_MODE_LOADBALANCE 3
@@ -109,6 +110,23 @@ static int set_socket(struct bond *bond)
 	return 0;
 }
 
+static int parse_netlink(unsigned char *msg)
+{
+	int ret;
+	struct nlmsghdr *h;
+	struct rtattr *tb[IFLA_MAX + 1];
+
+	h = (struct nlmsghdr *)msg;
+
+	ret = nlmsg_parse(h, IFLA_MAX, &tb, IFLA_MAX + 1, NULL);
+	if (ret < 0) {
+		printf("ERROR: Failed to parse args\n");
+		return -1;
+	}
+
+	printf("all good\n\n\n\n");
+	return 0;
+}
 
 static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
 			    struct nl_object *n_obj, uint64_t attr_diff,
@@ -116,22 +134,32 @@ static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
 {
 	int ret;
 	struct bond *bond = data;
-	struct nl_msg *msg = NULL;
+	struct sockaddr_nl local = {
+		.nl_family = AF_NETLINK,
+		.nl_pid = 0,
+		.nl_groups = 0,
+	};
+	unsigned char *buf = NULL;
 
-	msg = nlmsg_alloc();
-	if (!msg) {
-		printf("ERROR: Failed to allocate message\n");
-		goto exit;
+	buf = malloc(sizeof(unsigned char) * 1024);
+	if (!buf) {
+		printf("ERROR: Failed to alloocate buf\n");
+		return;
 	}
 
-	ret = recvmsg(bond->sock, msg, MSG_DONTWAIT);
+	ret = nl_recv(bond->sock, &local, &buf, NULL);
 	if (ret < 0) {
-		printf("ERROR: Failed to recv message from nl_sock(%s)\n", strerror(-ret));
-		goto exit;
+		if (ret != -nl_syserr2nlerr(EINTR) && ret != -nl_syserr2nlerr(EAGAIN)) {
+			printf("ERROR: Failed to recv message from nl_sock(%s)\n", strerror(-ret));
+			goto exit;
+		}
 	}
+
+	printf("RECV\n\n\n");
+	parse_netlink(buf);
 
 exit:
-	nlmsg_free(msg);
+	free(buf);
 }
 
 static void cache_mngr_event_handler(int fd, short flags, void *data)
