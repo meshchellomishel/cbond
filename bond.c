@@ -10,7 +10,6 @@
 #include <linux/if_link.h>
 #include <net/if.h>
 #include <linux/types.h>
-#include <event2/event.h>
 
 
 #define LAG_MODE_LOADBALANCE 3
@@ -21,21 +20,10 @@
 #define NLMSG_TAIL(nmsg) \
 	((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
-
-struct cache_mngr {
-	struct event *event;
-	struct nl_sock *sk;
-	struct nl_cache_mngr *nl_mngr;
-	int *cache_err;
-};
 struct bond {
 	struct nl_sock *sock;
 	struct nl_cache *cache;
 	struct nl_sock *evcb;
-
-	struct cache_mngr *mngr;
-
-	struct event_base *evbase;
 };
 
 
@@ -56,12 +44,16 @@ static struct bond *bond_alloc(void)
 	bond->sock = NULL;
 	bond->cache = NULL;
 
-	bond->mngr = NULL;
-	bond->mngr = malloc(sizeof(struct cache_mngr));
-	if (!bond->mngr)
-		return NULL;
-
 	return bond;
+}
+
+int bond_modify_cb(struct nl_msg *msg, void *arg)
+{
+	struct bond *bond = arg;
+
+	printf("Callback called\n");
+
+	return NL_SKIP;
 }
 
 static int set_socket(struct bond *bond)
@@ -80,7 +72,12 @@ static int set_socket(struct bond *bond)
 		return -1;
 	}
 
-	nl_socket_set_peer_groups(bond->evcb, RTMGRP_LINK | RTMGRP_NOTIFY);
+	nl_socket_set_peer_groups(bond->evcb, RTMGRP_LINK);
+	ret = nl_socket_modify_cb(bond->evcb, NL_CB_VALID, NL_CB_CUSTOM, bond_modify_cb, bond);
+	if (ret < 0) {
+		printf("ERROR: Failed to set callback function to socket\n");
+		return ret;
+	}
 
 	ret = nl_connect(bond->evcb, NETLINK_ROUTE);
 	if (ret < 0) {
@@ -100,97 +97,18 @@ static int set_socket(struct bond *bond)
 		return ret;
 	}
 
-	ret = nl_socket_set_nonblocking(bond->evcb);
-	if (ret < 0) {
-		printf("ERROR: Failed to set nl socket into non blocking\n");
-		return ret;
-	}
-
 	return 0;
 }
 
 
-static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
-			    struct nl_object *n_obj, uint64_t attr_diff,
-			    int nl_act, void *data)
-{
-	int ret;
-	struct bond *bond = data;
-	struct nl_msg *msg = NULL;
-
-	msg = nlmsg_alloc();
-	if (!msg) {
-		printf("ERROR: Failed to allocate message\n");
-		goto exit;
-	}
-
-	ret = recvmsg(bond->sock, msg, MSG_DONTWAIT);
-	if (ret < 0) {
-		printf("ERROR: Failed to recv message from nl_sock(%s)\n", strerror(-ret));
-		goto exit;
-	}
-
-exit:
-	nlmsg_free(msg);
-}
-
-static void cache_mngr_event_handler(int fd, short flags, void *data)
-{
-	struct cache_mngr *mngr = data;
-	int ret;
-
-	ret = nl_cache_mngr_data_ready(mngr->nl_mngr);
-	if (ret < 0) {
-		printf("Failed to process NL messages: %s\n",
-		     nl_geterror(ret));
-		*mngr->cache_err = ret;
-	}
-}
-
 static int set_cahce(struct bond *bond)
 {
 	int ret;
-	struct cache_mngr *mngr = bond->mngr;
 
-	mngr->sk = nl_socket_alloc();
-	if (!mngr->sk) {
-		printf("ERROR: Failed to allocate manager socket\n");
-		return -1;
-	}
-
-	ret = nl_cache_mngr_alloc(mngr->sk, NETLINK_ROUTE, NL_AUTO_PROVIDE, &mngr->nl_mngr);
-	if (ret < 0) {
-		printf("ERROR: Failed to allocate cache manager(%s)\n", nl_geterror(ret));
-		return ret;
-	}
-
-	ret = rtnl_link_alloc_cache_flags(mngr->sk, AF_UNSPEC, &bond->cache, NL_CACHE_AF_ITER);
+	ret = rtnl_link_alloc_cache_flags(bond->sock, AF_UNSPEC, &bond->cache, NL_CACHE_AF_ITER);
 	if (ret < 0) {
 		printf("ERROR: Failed to alloc link cache\n");
 		return ret;
-	}
-
-	ret = nl_cache_mngr_add_cache_v2(mngr->nl_mngr, bond->cache,
-					 cache_change_cb, bond);
-	if (ret < 0) {
-		printf("Failed to add 'route/link' cache to manager: %s\n",
-		     nl_geterror(ret));
-		nl_cache_free(bond->cache);
-		return ret;
-	}
-
-	mngr->event = event_new(bond->evbase, nl_cache_mngr_get_fd(mngr->nl_mngr),
-		EV_READ | EV_PERSIST, cache_mngr_event_handler,
-		mngr);
-	if (!mngr->event) {
-		printf("Failed to create mngr netlink event\n");
-		return -1;
-	}
-
-	ret = event_add(mngr->event, NULL);
-	if (ret < 0) {
-		printf("Failed to add netlink event\n");
-		return -1;
 	}
 
 	return 0;
@@ -206,12 +124,6 @@ int bond_init(struct bond *bond)
 		return ret;
 	}
 
-	bond->evbase = event_base_new();
-	if (!bond->evbase) {
-		printf("ERROR: Failed to allocate new evbase\n");
-		return ret;
-	}
-
 	return set_cahce(bond);
 }
 
@@ -224,9 +136,43 @@ void bond_destroy(struct bond *bond)
 			nl_cache_free(bond->cache);
 		if (bond->evcb)
 			nl_socket_free(bond->evcb);
-
-		// free(bond);
+		free(bond);
 	}
+}
+
+int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
+	      int alen)
+{
+	int len = RTA_LENGTH(alen);
+	struct rtattr *rta;
+
+	if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > maxlen) {
+		fprintf(stderr,
+			"addattr_l ERROR: message exceeded bound of %d\n",
+			maxlen);
+		return -1;
+	}
+	rta = NLMSG_TAIL(n);
+	rta->rta_type = type;
+	rta->rta_len = len;
+	if (alen)
+		memcpy(RTA_DATA(rta), data, alen);
+	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+	return 0;
+}
+
+struct rtattr *addattr_nest(struct nlmsghdr *n, int maxlen, int type)
+{
+	struct rtattr *nest = NLMSG_TAIL(n);
+
+	addattr_l(n, maxlen, type, NULL, 0);
+	return nest;
+}
+
+int addattr_nest_end(struct nlmsghdr *n, struct rtattr *nest)
+{
+	nest->rta_len = (void *)NLMSG_TAIL(n) - (void *)nest;
+	return n->nlmsg_len;
 }
 
 struct rtnl_link *build_bond_by_ifname(const char *ifname)
@@ -285,7 +231,7 @@ int _fill_default_info(struct nl_msg *msg, const char *ifname)
 
 		data = nla_nest_start(msg, IFLA_INFO_DATA);
 		{
-			nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LACP);
+			nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LOADBALANCE);
 			nla_put_u32(msg, IFLA_BOND_MIIMON, LAG_DEFAULT_MIIMON);
 		}
 		nla_nest_end(msg, data);
@@ -414,7 +360,7 @@ int main(void)
 	int ret;
 	struct bond *bond = NULL;
 
-	const char *ifname = "bond1";
+	const char *ifname = "bond3";
 	const char *slave = "enp29s0";
 
 	bond = bond_alloc();
@@ -431,13 +377,13 @@ int main(void)
 	}
 	// delete_bond(bond, ifname);
 	while (1) {
-		ret = event_base_loop(bond->evbase, EVLOOP_ONCE);
+		ret = nl_recvmsgs_default(bond->evcb);
 		if (ret < 0) {
-			printf("Event loop failed\n");
+			printf("Failed to recv NL mesgs: %s\n", nl_geterror(ret));
 			goto on_error;
-		}
+	}
 	}
 on_error:
-	// bond_destroy(bond);
+	bond_destroy(bond);
 	return 0;
 }
