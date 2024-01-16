@@ -2,7 +2,7 @@ LIBS=/usr/lib/libnl-3.so /usr/lib/libnl-route-3.so /usr/lib/libnl-genl-3.so /usr
 INC=/usr/include/libnl3/
 
 default: Makefile bond.c
-	gcc bond.c $(LIBS) -I$(INC) -o bond -Wall -g
+	gcc bond.c $(LIBS) -levent -I$(INC) -o bond -Wall -g
 
 clean:
 	rm bond
