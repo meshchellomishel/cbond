@@ -10,6 +10,7 @@
 #include <linux/if_link.h>
 #include <net/if.h>
 #include <linux/types.h>
+#include <errno.h>
 
 
 #define LAG_MODE_LOADBALANCE 3
@@ -72,8 +73,8 @@ static int set_socket(struct bond *bond)
 		return -1;
 	}
 
-	nl_socket_set_peer_groups(bond->evcb, RTMGRP_LINK);
-	ret = nl_socket_modify_cb(bond->evcb, NL_CB_VALID, NL_CB_CUSTOM, bond_modify_cb, bond);
+	nl_socket_set_peer_groups(bond->evcb, RTMGRP_LINK | RTMGRP_NOTIFY);
+	ret = nl_cb_set(bond->evcb, NL_CB_MSG_IN, NL_CB_CUSTOM, bond_modify_cb, bond);
 	if (ret < 0) {
 		printf("ERROR: Failed to set callback function to socket\n");
 		return ret;
@@ -357,33 +358,56 @@ int delete_bond(struct bond *bond, const char *ifname)
 
 int main(void)
 {
-	int ret;
-	struct bond *bond = NULL;
+	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 
-	const char *ifname = "bond3";
-	const char *slave = "enp29s0";
-
-	bond = bond_alloc();
-	bond_init(bond);
-
-	ret = create_bond(bond, ifname);
-	if (ret < 0)
-		printf("ERROR: Failed to create bonding iface '%s'\n", ifname);
-
-	ret = enslave_iface(bond, ifname, slave);
-	if (ret < 0) {
-		printf("ERROR: Failed to enslave iface: %s\n", nl_geterror(ret));
-		goto on_error;
+	if (fd < 0) {
+		printf("Ошибка создания netlink сокета: %s", strerror(errno));
+		return 1;
 	}
-	// delete_bond(bond, ifname);
+
+	struct sockaddr_nl local;
+	char buf[8192];
+	struct iovec iov;
+
+	iov.iov_base = buf;
+	iov.iov_len = sizeof(buf);
+
+	memset(&local, 0, sizeof(local));
+
+	local.nl_family = AF_NETLINK;
+	local.nl_groups = RTMGRP_LINK | RTMGRP_NOTIFY;
+	local.nl_pid = getpid();
+
+	struct msghdr msg;
+	{
+		msg.msg_name = &local;
+		msg.msg_namelen = sizeof(local);
+		msg.msg_iov = &iov;
+		msg.msg_iovlen = 1;
+	}
+
+	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
+		printf("Ошибка связывания с netlink сокетом: %s", (char *)strerror(errno));
+		close(fd);
+		return 1;
+	}
+
+	// читаем и разбираем сообщения из сокета
 	while (1) {
-		ret = nl_recvmsgs_default(bond->evcb);
-		if (ret < 0) {
-			printf("Failed to recv NL mesgs: %s\n", nl_geterror(ret));
-			goto on_error;
-	}
+		ssize_t status = recvmsg(fd, &msg, MSG_DONTWAIT);
+
+		if (status < 0) {
+			if (errno == EINTR || errno == EAGAIN) {
+				usleep(250000);
+				continue;
+			}
+
+			printf("Ошибка приема сообщения netlink: %s", (char *)strerror(errno));
+			continue;
+		}
+
+		printf("Nessage %d\n", status);
 	}
 on_error:
-	bond_destroy(bond);
 	return 0;
 }
