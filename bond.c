@@ -95,36 +95,48 @@ static int set_socket(struct bond *bond)
 		return ret;
 	}
 
-	ret = nl_socket_set_nonblocking(bond->sock);
-	if (ret < 0) {
-		printf("ERROR: Failed to set nl socket into non blocking\n");
-		return ret;
-	}
-
-	ret = nl_socket_set_nonblocking(bond->evcb);
-	if (ret < 0) {
-		printf("ERROR: Failed to set nl socket into non blocking\n");
-		return ret;
-	}
+	nl_socket_set_nonblocking(bond->sock);
 
 	return 0;
 }
 
-static int parse_netlink(unsigned char *msg)
+static int parse_netlink(unsigned char *buf)
 {
 	int ret;
-	struct nlmsghdr *h;
-	struct rtattr *tb[IFLA_MAX + 1];
+	struct nlmsghdr *h = buf;
+	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
 
-	h = (struct nlmsghdr *)msg;
-
-	ret = nlmsg_parse(h, IFLA_MAX, &tb, IFLA_MAX + 1, NULL);
+	printf("MSG type: %d\n", h->nlmsg_type);
+	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
 	if (ret < 0) {
-		printf("ERROR: Failed to parse args\n");
+		printf("Failed to parse args\n");
 		return -1;
 	}
 
-	printf("all good\n\n\n\n");
+	if (!tb[IFLA_LINKINFO]) {
+		printf("no linkinfo\n");
+		return -1;
+	}
+
+	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return -1;
+	}
+
+	if (!linkinfo[IFLA_INFO_KIND] || !linkinfo[IFLA_INFO_DATA]) {
+		printf("NO INFO\n");
+		return 0;
+	}
+
+	printf("type: %s\n", nla_get_string(linkinfo[IFLA_INFO_KIND]));
+	ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return -1;
+	}
+
+	printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
 	return 0;
 }
 
@@ -134,32 +146,19 @@ static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
 {
 	int ret;
 	struct bond *bond = data;
-	struct sockaddr_nl local = {
-		.nl_family = AF_NETLINK,
-		.nl_pid = 0,
-		.nl_groups = 0,
-	};
-	unsigned char *buf = NULL;
-
-	buf = malloc(sizeof(unsigned char) * 1024);
-	if (!buf) {
-		printf("ERROR: Failed to alloocate buf\n");
-		return;
-	}
+	struct sockaddr_nl local;
+	unsigned char *buf;
 
 	ret = nl_recv(bond->sock, &local, &buf, NULL);
-	if (ret < 0) {
+	if (ret <= 0) {
 		if (ret != -nl_syserr2nlerr(EINTR) && ret != -nl_syserr2nlerr(EAGAIN)) {
 			printf("ERROR: Failed to recv message from nl_sock(%s)\n", strerror(-ret));
-			goto exit;
+			return;
 		}
 	}
 
-	printf("RECV\n\n\n");
+	printf("RECV\n");
 	parse_netlink(buf);
-
-exit:
-	free(buf);
 }
 
 static void cache_mngr_event_handler(int fd, short flags, void *data)
