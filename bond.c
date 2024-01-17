@@ -362,7 +362,6 @@ void parse_attrs(unsigned char *buf)
 	struct nlmsghdr *h = buf;
 	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
 
-	printf("MSG type: %s\n", h->nlmsg_type == RTM_NEWLINK ? "RTM_NEWLINK" : "diff");
 	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
 	if (ret < 0) {
 		printf("Failed to parse args\n");
@@ -380,19 +379,32 @@ void parse_attrs(unsigned char *buf)
 		return;
 	}
 
-	if (!linkinfo[IFLA_INFO_KIND] || !linkinfo[IFLA_INFO_DATA]) {
-		printf("NO INFO\n");
-		return;
+	if (linkinfo[IFLA_INFO_SLAVE_KIND]) {
+		printf("type: %s_slave\n", nla_get_string(linkinfo[IFLA_INFO_SLAVE_KIND]));
+		if (linkinfo[IFLA_INFO_SLAVE_DATA]) {
+			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_SLAVE_DATA], NULL);
+			if (ret < 0) {
+				printf("Failed to parse linkinfo\n");
+				return;
+			}
+
+			printf("GOODe %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
+		} else
+			printf("NO INFO slave\n");
 	}
 
-	printf("type: %s\n", nla_get_string(linkinfo[IFLA_INFO_KIND]));
-	ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
-	if (ret < 0) {
-		printf("Failed to parse linkinfo\n");
-		return;
-	}
+	if (linkinfo[IFLA_INFO_KIND]) {
+		if (linkinfo[IFLA_INFO_DATA]) {
+			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
+			if (ret < 0) {
+				printf("Failed to parse linkinfo\n");
+				return;
+			}
 
-	printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
+			printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
+		} else
+			printf("NO INFO bond\n");
+	}
 }
 
 int main(void)
@@ -410,8 +422,6 @@ int main(void)
 
 	iov.iov_base = buf;
 	iov.iov_len = sizeof(buf);
-
-	memset(&local, 0, sizeof(local));
 
 	local.nl_family = AF_NETLINK;
 	local.nl_groups = RTMGRP_LINK | RTMGRP_NOTIFY;
