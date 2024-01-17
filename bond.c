@@ -356,6 +356,45 @@ int delete_bond(struct bond *bond, const char *ifname)
 	return ret;
 }
 
+void parse_attrs(unsigned char *buf)
+{
+	int ret;
+	struct nlmsghdr *h = buf;
+	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
+
+	printf("MSG type: %s\n", h->nlmsg_type == RTM_NEWLINK ? "RTM_NEWLINK" : "diff");
+	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
+	if (ret < 0) {
+		printf("Failed to parse args\n");
+		return;
+	}
+
+	if (!tb[IFLA_LINKINFO]) {
+		printf("no linkinfo\n");
+		return;
+	}
+
+	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return;
+	}
+
+	if (!linkinfo[IFLA_INFO_KIND] || !linkinfo[IFLA_INFO_DATA]) {
+		printf("NO INFO\n");
+		return;
+	}
+
+	printf("type: %s\n", nla_get_string(linkinfo[IFLA_INFO_KIND]));
+	ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return;
+	}
+
+	printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
+}
+
 int main(void)
 {
 	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
@@ -406,7 +445,7 @@ int main(void)
 			continue;
 		}
 
-		printf("Nessage %d\n", status);
+		parse_attrs(&buf);
 	}
 on_error:
 	return 0;
