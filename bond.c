@@ -68,6 +68,11 @@ static struct bond *bond_alloc(void)
 static int set_socket(struct bond *bond)
 {
 	int ret;
+	struct sockaddr_nl local = {
+		.nl_family = AF_NETLINK,
+		.nl_groups = RTMGRP_LINK | RTMGRP_NOTIFY,
+		.nl_pid = getpid(),
+	};
 
 	bond->sock = nl_socket_alloc();
 	if (!bond->sock) {
@@ -96,6 +101,12 @@ static int set_socket(struct bond *bond)
 	}
 
 	nl_socket_set_nonblocking(bond->sock);
+	nl_socket_set_nonblocking(bond->evcb);
+
+	ret = bind(nl_socket_get_fd(bond->evcb), &local, sizeof(local));
+	if (ret < 0)
+		printf("Failed to bind oscket\n");
+
 
 	return 0;
 }
@@ -144,6 +155,24 @@ static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
 			    struct nl_object *n_obj, uint64_t attr_diff,
 			    int nl_act, void *data)
 {
+	return;
+}
+
+static void cache_mngr_event_handler(int fd, short flags, void *data)
+{
+	struct cache_mngr *mngr = data;
+	int ret;
+
+	ret = nl_cache_mngr_data_ready(mngr->nl_mngr);
+	if (ret < 0) {
+		printf("Failed to process NL messages: %s\n",
+		     nl_geterror(ret));
+		*mngr->cache_err = ret;
+	}
+}
+
+static void on_event(int fd, short flags, void *data)
+{
 	int ret;
 	struct bond *bond = data;
 	struct sockaddr_nl local;
@@ -159,19 +188,6 @@ static void cache_change_cb(struct nl_cache *cache, struct nl_object *o_obj,
 
 	printf("RECV\n");
 	parse_netlink(buf);
-}
-
-static void cache_mngr_event_handler(int fd, short flags, void *data)
-{
-	struct cache_mngr *mngr = data;
-	int ret;
-
-	ret = nl_cache_mngr_data_ready(mngr->nl_mngr);
-	if (ret < 0) {
-		printf("Failed to process NL messages: %s\n",
-		     nl_geterror(ret));
-		*mngr->cache_err = ret;
-	}
 }
 
 static int set_cahce(struct bond *bond)
@@ -214,7 +230,16 @@ static int set_cahce(struct bond *bond)
 		return -1;
 	}
 
+	struct event *ev = event_new(bond->evbase, nl_socket_get_fd(bond->evcb),
+		EV_READ | EV_PERSIST, on_event, bond);
+
 	ret = event_add(mngr->event, NULL);
+	if (ret < 0) {
+		printf("Failed to add netlink event\n");
+		return -1;
+	}
+
+	ret = event_add(ev, NULL);
 	if (ret < 0) {
 		printf("Failed to add netlink event\n");
 		return -1;
