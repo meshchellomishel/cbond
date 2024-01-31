@@ -263,6 +263,52 @@ int main(void)
 
 
 
+	curr.partner_system_priority = 3;	/* Should be better (port number lower then best, mac-addr lower partners) */
+	best.partner_system_priority = 3;
+	curr.aggregator_mac_address = addr1;
+	best.aggregator_mac_address = addr1;
+	curr.partner_system = addr3;
+	curr.actor_port_priority = 1;
+	best.actor_port_priority = 2;
+	printf("\n[BEST]:\n");
+	printAgg(&best);
+	printf("[CURR]:\n");
+	printAgg(&curr);
+	printf("6.It should be curr(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
+	printf("(actor_sys_id < curr.partner_sys_id < best.partner_sys_id) => actor\n");
+	printf("(curr.port_prio < best.port_prio) => curr\n");
+	result = __compare_lacp_prio(&curr, &best);
+	printf("\n[BETTER]: ");
+	if ((struct agg *)&curr == result)
+		printf("Curr (Right)\n");
+	else
+		printf("Best (Wrong)\n");
+
+
+
+	curr.partner_system_priority = 3;	/* Should be better (port number lower then best, mac-addr lower partners) */
+	best.partner_system_priority = 3;
+	curr.aggregator_mac_address = addr1;
+	best.aggregator_mac_address = addr1;
+	curr.partner_system = addr3;
+	curr.actor_port_priority = 2;
+	best.actor_port_priority = 1;
+	printf("\n[BEST]:\n");
+	printAgg(&best);
+	printf("[CURR]:\n");
+	printAgg(&curr);
+	printf("7.It should be best(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
+	printf("(actor_sys_id < curr.partner_sys_id < best.partner_sys_id) => actor\n");
+	printf("(best.port_prio < curr.port_prio) => best\n");
+	result = __compare_lacp_prio(&curr, &best);
+	printf("\n[BETTER]: ");
+	if ((struct agg *)&curr == result)
+		printf("Curr (Wrong)\n");
+	else
+		printf("Best (Right)\n");
+
+
+
 	curr.partner_system_priority = 3;
 	best.partner_system_priority = 3;
 	curr.aggregator_mac_address = addr3;
@@ -277,7 +323,7 @@ int main(void)
 	printAgg(&best);
 	printf("[CURR]:\n");
 	printAgg(&curr);
-	printf("6.It should be best(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
+	printf("8.It should be best(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
 	printf("(best.partner_sys_id = curr.partner_sys_id < actor_sys_id)\n");
 	printf("(curr.partner_port_prio = best.partner_port_prio)\n");
 	printf("(best.partner_port_num < curr.partner_port_num) => best\n");
