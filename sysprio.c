@@ -137,37 +137,6 @@ static void printAgg(struct agg *agg)
 
 }
 
-static void compare_addrs(struct mac_addr *addr1, struct mac_addr *addr2)
-{
-	printf("res: %d\n", memcmp(addr1->mac_addr_value, addr2->mac_addr_value, sizeof(uint8_t)*ETH_ALEN));
-	if (memcmp(addr1->mac_addr_value, addr2->mac_addr_value, sizeof(uint8_t)*ETH_ALEN) <= 0)
-		printAddr(addr1);
-	else
-		printAddr(addr2);
-}
-
-static void compare_prios(uint16_t *prio1, uint16_t *prio2)
-{
-	printf("res: %d\n", memcmp(prio1, prio2, sizeof(uint16_t)));
-	if (memcmp(prio1, prio2, sizeof(uint16_t)) <= 0)
-		printf("lower: %hu\n", *prio1);
-	else
-		printf("lower: %hu\n", *prio2);
-
-}
-
-static void compare_params(struct lacp_prio_params *param1, struct lacp_prio_params *param2)
-{
-	printf("res: %d\n", __compare_lacp_prio_params(param1, param2));
-	if (__compare_lacp_prio_params(param1, param2) <= 0) {
-		printf("lower: %hu, ", param1->system_priority);
-		printAddr(&param1->mac_addr);
-	} else {
-		printf("lower: %hu, ", param2->system_priority);
-		printAddr(&param2->mac_addr);
-	}
-}
-
 int main(void)
 {
 	struct agg curr, best, *result;
