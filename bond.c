@@ -373,6 +373,20 @@ void parse_attrs(unsigned char *buf)
 		return;
 	}
 
+	if (tb[IFLA_IFNAME])
+		printf("\n\nName: %s\n", nla_get_string(tb[IFLA_IFNAME]));
+	if (tb[IFLA_CARRIER])
+		printf("Oper-Status: %s\n", nla_get_u8(tb[IFLA_CARRIER]) ? "Up" : "Down");
+	if (tb[IFLA_ADDRESS]) {
+		unsigned char *mac;
+
+		mac = RTA_DATA(tb[IFLA_ADDRESS]);
+		printf("Source mac: ");
+		for (int i = 0; i < 5; i++)
+			printf("%02x:", mac[i]);
+		printf("%02x\n", mac[5]);
+	}
+
 	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
 	if (ret < 0) {
 		printf("Failed to parse linkinfo\n");
@@ -387,8 +401,8 @@ void parse_attrs(unsigned char *buf)
 				printf("Failed to parse linkinfo\n");
 				return;
 			}
-
-			printf("GOODe %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
+			if (bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE])
+				printf("GOODe %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
 		} else
 			printf("NO INFO slave\n");
 	}
