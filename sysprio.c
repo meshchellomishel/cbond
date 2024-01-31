@@ -83,7 +83,7 @@ static struct agg *__compare_partners(struct agg *curr, struct agg *best)
 static struct agg *__compare_lacp_prio(struct agg *curr, struct agg *best)
 {
 	struct lacp_prio_params curr_params, best_params;
-	uint8_t result;
+	int result;
 	uint16_t actor_system_priority = curr->actor_system_priority;
 	bool curr_actor = __actor_better(curr);
 	bool best_actor = __actor_better(best);
@@ -294,6 +294,30 @@ int main(void)
 
 
 
+	curr.partner_system_priority = 3;
+	best.partner_system_priority = 3;
+	curr.aggregator_mac_address = addr3;
+	best.aggregator_mac_address = addr3;
+	best.partner_system = addr1;
+	curr.partner_system = addr2;
+	curr.partner_port_priority = 255;
+	best.partner_port_priority = 255;
+	curr.partner_port_number = 1;
+	best.partner_port_number = 2;
+	printf("\n[BEST]:\n");
+	printAgg(&best);
+	printf("[CURR]:\n");
+	printAgg(&curr);
+	printf("6.It should be best(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
+	printf("(best.partner_sys_id = curr.partner_sys_id < actor_sys_id)\n");
+	printf("(curr.partner_port_prio = best.partner_port_prio)\n");
+	printf("(best.partner_port_num < curr.partner_port_num) => best\n");
+	result = __compare_lacp_prio(&curr, &best);
+	printf("\n[BETTER]: ");
+	if ((struct agg *)&curr == result)
+		printf("Curr (Wrong)\n");
+	else
+		printf("Best (Right)\n");
 
 
 
