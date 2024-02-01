@@ -18,8 +18,21 @@
 #define LAG_DEFAULT_MIIMON 100
 #define BOND_TYPE "bond"
 
+#define BOND_MAX_FULL_STATUS 18
+#define BOND_MAX_ORIGINAL_STATUS 10
+
 #define NLMSG_TAIL(nmsg) \
 	((struct rtattr *) (((void *) (nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
+
+enum rx_state {
+	AD_RX_DUMMY,
+	AD_RX_INITIALIZE,	/* rx Machine */
+	AD_RX_PORT_DISABLED,	/* rx Machine */
+	AD_RX_LACP_DISABLED,	/* rx Machine */
+	AD_RX_EXPIRED,		/* rx Machine */
+	AD_RX_DEFAULTED,	/* rx Machine */
+	AD_RX_CURRENT		/* rx Machine */
+};
 
 struct bond {
 	struct nl_sock *sock;
@@ -48,11 +61,139 @@ static struct bond *bond_alloc(void)
 	return bond;
 }
 
+const char *state2str(enum rx_state state)
+{
+	switch (state) {
+	case AD_RX_DUMMY:
+		return "dummy";
+	case AD_RX_INITIALIZE:
+		return "initialize";
+	case AD_RX_PORT_DISABLED:
+		return "port disabled";
+	case AD_RX_LACP_DISABLED:
+		return "lacp disabled";
+	case AD_RX_EXPIRED:
+		return "expired";
+	case AD_RX_DEFAULTED:
+		return "default";
+	case AD_RX_CURRENT:
+		return "current";
+	}
+
+	return "unknown";
+}
+
+void printAddr(unsigned char *addr)
+{
+	for (int i = 0; i < 5; i++)
+		printf("%02x:", addr[i]);
+	printf("%02x\n", addr[5]);
+}
+
+void parse_attrs(struct nl_msg *msg)
+{
+	int ret;
+	struct nlmsghdr *h = nlmsg_hdr(msg);
+	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
+
+	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
+	if (ret < 0) {
+		printf("Failed to parse args\n");
+		return;
+	}
+
+	if (!tb[IFLA_LINKINFO]) {
+		printf("no linkinfo\n");
+		return;
+	}
+
+	if (tb[IFLA_IFNAME])
+		printf("\n\nName: %s\n", nla_get_string(tb[IFLA_IFNAME]));
+	if (tb[IFLA_CARRIER])
+		printf("Oper-Status: %s\n", nla_get_u8(tb[IFLA_CARRIER]) ? "Up" : "Down");
+	printf("[ACTOR]\n");
+	printf("Actor system id: ");
+	if (tb[IFLA_ADDRESS]) {
+		unsigned char *mac;
+
+		mac = RTA_DATA(tb[IFLA_ADDRESS]);
+		printAddr(mac);
+	} else
+		printf("no info\n");
+
+	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return;
+	}
+
+	/*
+	IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY,
+	ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO,
+	IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID,
+	IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY,
+	IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM,
+	IFLA_BOND_SLAVE_PARTNER_PORT_NUM,
+	IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO,
+	IFLA_BOND_SLAVE_AD_RX_PORT_STATE,
+	*/
+
+	if (linkinfo[IFLA_INFO_SLAVE_KIND]) {
+		printf("type: %s_slave\n", nla_get_string(linkinfo[IFLA_INFO_SLAVE_KIND]));
+		if (linkinfo[IFLA_INFO_SLAVE_DATA]) {
+			ret = nla_parse_nested(&bond, IFLA_BOND_SLAVE_MAX, linkinfo[IFLA_INFO_SLAVE_DATA], NULL);
+			if (ret < 0) {
+				printf("Failed to parse linkinfo\n");
+				return;
+			}
+
+			if (IFLA_BOND_SLAVE_MAX+1 == BOND_MAX_FULL_STATUS) {
+				if (bond[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY])
+					printf("\tActor key: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY]));
+
+				if (bond[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM])
+					printf("\tActor port num: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM]));
+
+				if (bond[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])
+					printf("\tActor rx_state: %s\n", state2str(nla_get_u16(bond[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])));
+
+				printf("[PARTNER]\n");
+
+				if (bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY])
+					printf("\tPartner key: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY]));
+
+				if (bond[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO])
+					printf("\tPartner system priority: %d\n", nla_get_u16(bond[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO]));
+
+				if (bond[IFLA_BOND_SLAVE_PARTNER_PORT_NUM])
+					printf("\tPartner port num: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_PARTNER_PORT_NUM]));
+
+				if (bond[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO])
+					printf("\tPartner port prio: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO]));
+			} else
+				printf("Full status not supported\n");
+
+		} else
+			printf("NO INFO slave\n");
+	}
+
+	if (linkinfo[IFLA_INFO_KIND]) {
+		if (linkinfo[IFLA_INFO_DATA]) {
+			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
+			if (ret < 0) {
+				printf("Failed to parse linkinfo\n");
+				return;
+			}
+
+			printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
+		} else
+			printf("NO INFO bond\n");
+	}
+}
+
 int bond_modify_cb(struct nl_msg *msg, void *arg)
 {
-	struct bond *bond = arg;
-
-	printf("Callback called\n");
+	parse_attrs(msg);
 
 	return NL_SKIP;
 }
@@ -73,8 +214,8 @@ static int set_socket(struct bond *bond)
 		return -1;
 	}
 
-	nl_socket_set_peer_groups(bond->evcb, RTMGRP_LINK | RTMGRP_NOTIFY);
-	ret = nl_cb_set(bond->evcb, NL_CB_MSG_IN, NL_CB_CUSTOM, bond_modify_cb, bond);
+	nl_socket_set_peer_groups(bond->sock, RTMGRP_LINK | RTMGRP_NOTIFY);
+	ret = nl_socket_modify_cb(bond->sock, NL_CB_VALID, NL_CB_CUSTOM, bond_modify_cb, bond);
 	if (ret < 0) {
 		printf("ERROR: Failed to set callback function to socket\n");
 		return ret;
@@ -141,41 +282,6 @@ void bond_destroy(struct bond *bond)
 	}
 }
 
-int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
-	      int alen)
-{
-	int len = RTA_LENGTH(alen);
-	struct rtattr *rta;
-
-	if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > maxlen) {
-		fprintf(stderr,
-			"addattr_l ERROR: message exceeded bound of %d\n",
-			maxlen);
-		return -1;
-	}
-	rta = NLMSG_TAIL(n);
-	rta->rta_type = type;
-	rta->rta_len = len;
-	if (alen)
-		memcpy(RTA_DATA(rta), data, alen);
-	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
-	return 0;
-}
-
-struct rtattr *addattr_nest(struct nlmsghdr *n, int maxlen, int type)
-{
-	struct rtattr *nest = NLMSG_TAIL(n);
-
-	addattr_l(n, maxlen, type, NULL, 0);
-	return nest;
-}
-
-int addattr_nest_end(struct nlmsghdr *n, struct rtattr *nest)
-{
-	nest->rta_len = (void *)NLMSG_TAIL(n) - (void *)nest;
-	return n->nlmsg_len;
-}
-
 struct rtnl_link *build_bond_by_ifname(const char *ifname)
 {
 	struct rtnl_link *link = NULL;
@@ -196,8 +302,9 @@ struct nl_msg *build_msg(int nlmsg_type, int flags, struct rtnl_link *link)
 	int ret;
 	int ifindex = 0;
 
-	if (flags & NLM_F_CREATE)
+	if (link)
 		ifindex = rtnl_link_get_ifindex(link);
+	printf("ifindex: %d\n", ifindex);
 	struct nl_msg *msg = NULL;
 	struct ifinfomsg ifi = {
 		.ifi_family = AF_UNSPEC,
@@ -212,9 +319,11 @@ struct nl_msg *build_msg(int nlmsg_type, int flags, struct rtnl_link *link)
 	if (ret < 0)
 		return NULL;
 
-	ret = rtnl_link_fill_info(msg, link);
-	if (ret < 0)
-		return NULL;
+	if (link && nlmsg_type == RTM_NEWLINK) {
+		ret = rtnl_link_fill_info(msg, link);
+		if (ret < 0)
+			return NULL;
+	}
 
 	return msg;
 }
@@ -338,139 +447,97 @@ int create_bond(struct bond *bond, const char *ifname)
 	return ret;
 }
 
+struct nl_msg *get_bond(struct bond *bond, const char *ifname)
+{
+	struct nl_msg *msg;
+	struct rtnl_link *link = NULL;
+
+	link = rtnl_link_get_by_name(bond->cache, ifname);
+	if (!link) {
+		printf("ERROR: Failed to found iface\n");
+		return NULL;
+	}
+
+	msg = build_msg(RTM_GETLINK, NLM_F_REQUEST, link);
+	if (!msg) {
+		printf("ERROR: Failed to create msg\n");
+		return NULL;
+	}
+
+	rtnl_link_put(link);
+	return msg;
+}
+
 int delete_bond(struct bond *bond, const char *ifname)
 {
 	int ret;
 	struct nl_msg *msg = NULL;
 	struct rtnl_link *link = NULL;
 
+	ret = set_cahce(bond);
+	if (ret < 0) {
+		printf("[ERROR]: Failed to set cache\n");
+		return -1;
+	}
+
 	link = rtnl_link_get_by_name(bond->cache, ifname);
 	if (!link) {
 		printf("ERROR: Failed to found iface\n");
 		return 0;
 	}
-	msg = build_msg(RTM_DELLINK, 0, link);
+	msg = build_msg(RTM_DELLINK, NLM_F_REQUEST, link);
 	ret = nl_talk(bond, msg);
 
 	rtnl_link_put(link);
 	return ret;
 }
 
-void parse_attrs(unsigned char *buf)
-{
-	int ret;
-	struct nlmsghdr *h = buf;
-	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
-
-	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
-	if (ret < 0) {
-		printf("Failed to parse args\n");
-		return;
-	}
-
-	if (!tb[IFLA_LINKINFO]) {
-		printf("no linkinfo\n");
-		return;
-	}
-
-	if (tb[IFLA_IFNAME])
-		printf("\n\nName: %s\n", nla_get_string(tb[IFLA_IFNAME]));
-	if (tb[IFLA_CARRIER])
-		printf("Oper-Status: %s\n", nla_get_u8(tb[IFLA_CARRIER]) ? "Up" : "Down");
-	if (tb[IFLA_ADDRESS]) {
-		unsigned char *mac;
-
-		mac = RTA_DATA(tb[IFLA_ADDRESS]);
-		printf("Source mac: ");
-		for (int i = 0; i < 5; i++)
-			printf("%02x:", mac[i]);
-		printf("%02x\n", mac[5]);
-	}
-
-	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
-	if (ret < 0) {
-		printf("Failed to parse linkinfo\n");
-		return;
-	}
-
-	if (linkinfo[IFLA_INFO_SLAVE_KIND]) {
-		printf("type: %s_slave\n", nla_get_string(linkinfo[IFLA_INFO_SLAVE_KIND]));
-		if (linkinfo[IFLA_INFO_SLAVE_DATA]) {
-			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_SLAVE_DATA], NULL);
-			if (ret < 0) {
-				printf("Failed to parse linkinfo\n");
-				return;
-			}
-			if (bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE])
-				printf("GOODe %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
-		} else
-			printf("NO INFO slave\n");
-	}
-
-	if (linkinfo[IFLA_INFO_KIND]) {
-		if (linkinfo[IFLA_INFO_DATA]) {
-			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
-			if (ret < 0) {
-				printf("Failed to parse linkinfo\n");
-				return;
-			}
-
-			printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
-		} else
-			printf("NO INFO bond\n");
-	}
-}
-
 int main(void)
 {
-	int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	int ret;
+	struct bond *bond = NULL;
 
-	if (fd < 0) {
-		printf("Ошибка создания netlink сокета: %s", strerror(errno));
-		return 1;
+	bond = bond_alloc();
+	if (!bond) {
+		printf("[ERROR]: Failed to allocate bond\n");
+		return -1;
 	}
 
-	struct sockaddr_nl local;
-	char buf[8192];
-	struct iovec iov;
-
-	iov.iov_base = buf;
-	iov.iov_len = sizeof(buf);
-
-	local.nl_family = AF_NETLINK;
-	local.nl_groups = RTMGRP_LINK | RTMGRP_NOTIFY;
-	local.nl_pid = getpid();
-
-	struct msghdr msg;
-	{
-		msg.msg_name = &local;
-		msg.msg_namelen = sizeof(local);
-		msg.msg_iov = &iov;
-		msg.msg_iovlen = 1;
-	}
-
-	if (bind(fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-		printf("Ошибка связывания с netlink сокетом: %s", (char *)strerror(errno));
-		close(fd);
-		return 1;
+	ret = bond_init(bond);
+	if (ret < 0) {
+		printf("[ERROR]: Failed to init bond\n");
+		goto on_error;
 	}
 
 	// читаем и разбираем сообщения из сокета
 	while (1) {
-		ssize_t status = recvmsg(fd, &msg, MSG_DONTWAIT);
+		ssize_t status;
+		struct nl_cb *cb;
+		struct nl_msg *msg = NULL;
 
-		if (status < 0) {
-			if (errno == EINTR || errno == EAGAIN) {
-				usleep(250000);
-				continue;
-			}
-
-			printf("Ошибка приема сообщения netlink: %s", (char *)strerror(errno));
-			continue;
+		sleep(3);
+		msg = get_bond(bond, "enp29s0");
+		if (!msg) {
+			printf("[ERROR]: Failed to get msg\n");
+			goto on_error;
 		}
 
-		parse_attrs(&buf);
+		status = nl_send_auto(bond->sock, msg);
+		if (status < 0) {
+			printf("[ERROR]: Failed to send get request (%s)\n", strerror(-status));
+			goto on_error;
+		}
+
+		cb = nl_socket_get_cb(bond->sock);
+		do {
+			status = nl_recvmsgs_report(bond->sock, cb);
+		} while (status > 0);
+		nl_cb_put(cb);
+
+		nlmsg_free(msg);
 	}
+
 on_error:
-	return 0;
+	bond_destroy(bond);
+	return -1;
 }
