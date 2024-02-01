@@ -324,7 +324,11 @@ int main(void)
 	printf("[CURR]:\n");
 	printAgg(&curr);
 	printf("8.It should be best(actor_sys_prio = best.partner_sys_prio = best.partner_sys_prio)\n");
+<<<<<<< HEAD
 	printf("(best.partner_sys_id = curr.partner_sys_id < actor_sys_id)\n");
+=======
+	printf("(best.partner_sys_id = curr.partner_sys_id < actor_sys_id) => partner\n");
+>>>>>>> d2d228f (add some tests)
 	printf("(curr.partner_port_prio = best.partner_port_prio)\n");
 	printf("(best.partner_port_num < curr.partner_port_num) => best\n");
 	result = __compare_lacp_prio(&curr, &best);
