@@ -11,6 +11,7 @@
 #include <net/if.h>
 #include <linux/types.h>
 #include <errno.h>
+#include <time.h>
 
 
 #define LAG_MODE_LOADBALANCE 3
@@ -112,7 +113,7 @@ void parse_attrs(struct nl_msg *msg)
 	if (tb[IFLA_CARRIER])
 		printf("Oper-Status: %s\n", nla_get_u8(tb[IFLA_CARRIER]) ? "Up" : "Down");
 	printf("[ACTOR]\n");
-	printf("Actor system id: ");
+	printf("\tActor system id: ");
 	if (tb[IFLA_ADDRESS]) {
 		unsigned char *mac;
 
@@ -139,13 +140,15 @@ void parse_attrs(struct nl_msg *msg)
 	*/
 
 	if (linkinfo[IFLA_INFO_SLAVE_KIND]) {
-		printf("type: %s_slave\n", nla_get_string(linkinfo[IFLA_INFO_SLAVE_KIND]));
 		if (linkinfo[IFLA_INFO_SLAVE_DATA]) {
 			ret = nla_parse_nested(&bond, IFLA_BOND_SLAVE_MAX, linkinfo[IFLA_INFO_SLAVE_DATA], NULL);
 			if (ret < 0) {
 				printf("Failed to parse linkinfo\n");
 				return;
 			}
+
+			if (bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE])
+				printf("Actor port state: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
 
 			if (IFLA_BOND_SLAVE_MAX+1 == BOND_MAX_FULL_STATUS) {
 				if (bond[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY])
@@ -158,6 +161,11 @@ void parse_attrs(struct nl_msg *msg)
 					printf("\tActor rx_state: %s\n", state2str(nla_get_u16(bond[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])));
 
 				printf("[PARTNER]\n");
+
+				if (bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]) {
+					printf("\tPartner system id: ");
+					printAddr(RTA_DATA(bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]));
+				}
 
 				if (bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY])
 					printf("\tPartner key: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY]));
@@ -172,6 +180,9 @@ void parse_attrs(struct nl_msg *msg)
 					printf("\tPartner port prio: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO]));
 			} else
 				printf("Full status not supported\n");
+
+			if (bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE])
+				printf("Partner port state: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE]));
 
 		} else
 			printf("NO INFO slave\n");
@@ -492,6 +503,33 @@ int delete_bond(struct bond *bond, const char *ifname)
 	return ret;
 }
 
+void get_state(struct bond *bond, const char *ifname)
+{
+	ssize_t status;
+	struct nl_cb *cb;
+	struct nl_msg *msg = NULL;
+
+	msg = get_bond(bond, ifname);
+	if (!msg) {
+		printf("[ERROR]: Failed to get msg\n");
+		return;
+	}
+
+	status = nl_send_auto(bond->sock, msg);
+	if (status < 0) {
+		printf("[ERROR]: Failed to send get request (%s)\n", strerror(-status));
+		return;
+	}
+
+	cb = nl_socket_get_cb(bond->sock);
+	do {
+		status = nl_recvmsgs_report(bond->sock, cb);
+	} while (status > 0);
+	nl_cb_put(cb);
+
+	nlmsg_free(msg);
+}
+
 int main(void)
 {
 	int ret;
@@ -511,30 +549,17 @@ int main(void)
 
 	// читаем и разбираем сообщения из сокета
 	while (1) {
-		ssize_t status;
-		struct nl_cb *cb;
-		struct nl_msg *msg = NULL;
+		clock_t t, t0;
 
 		sleep(3);
-		msg = get_bond(bond, "enp29s0");
-		if (!msg) {
-			printf("[ERROR]: Failed to get msg\n");
-			goto on_error;
-		}
+		t0 = clock();
 
-		status = nl_send_auto(bond->sock, msg);
-		if (status < 0) {
-			printf("[ERROR]: Failed to send get request (%s)\n", strerror(-status));
-			goto on_error;
-		}
+		get_state(bond, "bond0");
+		get_state(bond, "enp29s0");
+		get_state(bond, "enp56s0f4u1");
 
-		cb = nl_socket_get_cb(bond->sock);
-		do {
-			status = nl_recvmsgs_report(bond->sock, cb);
-		} while (status > 0);
-		nl_cb_put(cb);
-
-		nlmsg_free(msg);
+		t = clock();
+		printf("get info from one port: %f\n", (double)(t - t0)/CLOCKS_PER_SEC);
 	}
 
 on_error:
