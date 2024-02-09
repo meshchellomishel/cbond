@@ -19,7 +19,7 @@
 #define LAG_DEFAULT_MIIMON 100
 #define BOND_TYPE "bond"
 
-#define BOND_MAX_FULL_STATUS 18
+#define BOND_MAX_FULL_STATUS 20
 #define BOND_MAX_ORIGINAL_STATUS 10
 
 #define NLMSG_TAIL(nmsg) \
@@ -91,11 +91,69 @@ void printAddr(unsigned char *addr)
 	printf("%02x\n", addr[5]);
 }
 
-void parse_attrs(struct nl_msg *msg)
+void parse_slave(struct nlattr *linkinfo)
 {
 	int ret;
+	struct nlattr *slave[IFLA_BOND_SLAVE_MAX+1];
+
+	if (!linkinfo)
+		return;
+
+	ret = nla_parse_nested(&slave, IFLA_BOND_SLAVE_MAX, linkinfo, NULL);
+	if (ret < 0) {
+		printf("Failed to parse linkinfo\n");
+		return;
+	}
+
+	if (slave[IFLA_BOND_SLAVE_IFNAME])
+		printf("[%s]\n", nla_get_string(slave[IFLA_BOND_SLAVE_IFNAME]));
+
+	printf("\t[ACTOR]\n");
+
+	if (slave[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE])
+		printf("\t\tActor port state: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
+
+	if (IFLA_BOND_SLAVE_MAX+1 == BOND_MAX_FULL_STATUS) {
+		if (slave[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY])
+			printf("\t\tActor key: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY]));
+
+		if (slave[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM])
+			printf("\t\tActor port num: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM]));
+
+		if (slave[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])
+			printf("\t\tActor rx_state: %s\n", state2str(nla_get_u16(slave[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])));
+
+		printf("\t[PARTNER]\n");
+
+		if (slave[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]) {
+			printf("\t\tPartner system id: ");
+			printAddr(RTA_DATA(slave[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]));
+		}
+
+		if (slave[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY])
+			printf("\t\tPartner key: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY]));
+
+		if (slave[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO])
+			printf("\t\tPartner system priority: %d\n", nla_get_u16(slave[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO]));
+
+		if (slave[IFLA_BOND_SLAVE_PARTNER_PORT_NUM])
+			printf("\t\tPartner port num: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_PARTNER_PORT_NUM]));
+
+		if (slave[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO])
+			printf("\t\tPartner port prio: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO]));
+
+	} else
+		printf("Full status not supported\n");
+
+	if (slave[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE])
+		printf("\t\tPartner port state: %d\n", nla_get_u16(slave[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE]));
+}
+
+void parse_attrs(struct nl_msg *msg)
+{
+	int ret, i;
 	struct nlmsghdr *h = nlmsg_hdr(msg);
-	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1];
+	struct nlattr *tb[IFLA_MAX + 1], *linkinfo[IFLA_INFO_MAX + 1], *bond[IFLA_BOND_MAX + 1], *port;
 
 	ret = nlmsg_parse(h, sizeof(struct ifinfomsg), &tb, IFLA_MAX, NULL);
 	if (ret < 0) {
@@ -103,24 +161,21 @@ void parse_attrs(struct nl_msg *msg)
 		return;
 	}
 
-	if (!tb[IFLA_LINKINFO]) {
-		printf("no linkinfo\n");
+	if (!tb[IFLA_LINKINFO])
 		return;
-	}
 
 	if (tb[IFLA_IFNAME])
 		printf("\n\nName: %s\n", nla_get_string(tb[IFLA_IFNAME]));
 	if (tb[IFLA_CARRIER])
 		printf("Oper-Status: %s\n", nla_get_u8(tb[IFLA_CARRIER]) ? "Up" : "Down");
-	printf("[ACTOR]\n");
-	printf("\tActor system id: ");
-	if (tb[IFLA_ADDRESS]) {
-		unsigned char *mac;
+	// printf("\tActor system id: ");
+	// if (tb[IFLA_ADDRESS]) {
+	// 	unsigned char *mac;
 
-		mac = RTA_DATA(tb[IFLA_ADDRESS]);
-		printAddr(mac);
-	} else
-		printf("no info\n");
+	// 	mac = RTA_DATA(tb[IFLA_ADDRESS]);
+	// 	printAddr(mac);
+	// } else
+	// 	printf("no info\n");
 
 	ret = nla_parse_nested(&linkinfo, IFLA_INFO_MAX, tb[IFLA_LINKINFO], NULL);
 	if (ret < 0) {
@@ -139,55 +194,6 @@ void parse_attrs(struct nl_msg *msg)
 	IFLA_BOND_SLAVE_AD_RX_PORT_STATE,
 	*/
 
-	if (linkinfo[IFLA_INFO_SLAVE_KIND]) {
-		if (linkinfo[IFLA_INFO_SLAVE_DATA]) {
-			ret = nla_parse_nested(&bond, IFLA_BOND_SLAVE_MAX, linkinfo[IFLA_INFO_SLAVE_DATA], NULL);
-			if (ret < 0) {
-				printf("Failed to parse linkinfo\n");
-				return;
-			}
-
-			if (bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE])
-				printf("Actor port state: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_OPER_PORT_STATE]));
-
-			if (IFLA_BOND_SLAVE_MAX+1 == BOND_MAX_FULL_STATUS) {
-				if (bond[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY])
-					printf("\tActor key: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_INFO_ACTOR_KEY]));
-
-				if (bond[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM])
-					printf("\tActor port num: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_ACTOR_PORT_NUM]));
-
-				if (bond[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])
-					printf("\tActor rx_state: %s\n", state2str(nla_get_u16(bond[IFLA_BOND_SLAVE_AD_RX_PORT_STATE])));
-
-				printf("[PARTNER]\n");
-
-				if (bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]) {
-					printf("\tPartner system id: ");
-					printAddr(RTA_DATA(bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_ID]));
-				}
-
-				if (bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY])
-					printf("\tPartner key: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_PATNER_OPER_KEY]));
-
-				if (bond[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO])
-					printf("\tPartner system priority: %d\n", nla_get_u16(bond[ILFA_BOND_SLAVE_AD_PARTNER_OPER_SYSTEM_PRIO]));
-
-				if (bond[IFLA_BOND_SLAVE_PARTNER_PORT_NUM])
-					printf("\tPartner port num: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_PARTNER_PORT_NUM]));
-
-				if (bond[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO])
-					printf("\tPartner port prio: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_PARTNER_OPER_PORT_PRIO]));
-			} else
-				printf("Full status not supported\n");
-
-			if (bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE])
-				printf("Partner port state: %d\n", nla_get_u16(bond[IFLA_BOND_SLAVE_AD_PARTNER_OPER_PORT_STATE]));
-
-		} else
-			printf("NO INFO slave\n");
-	}
-
 	if (linkinfo[IFLA_INFO_KIND]) {
 		if (linkinfo[IFLA_INFO_DATA]) {
 			ret = nla_parse_nested(&bond, IFLA_BOND_MAX, linkinfo[IFLA_INFO_DATA], NULL);
@@ -196,7 +202,13 @@ void parse_attrs(struct nl_msg *msg)
 				return;
 			}
 
-			printf("GOOD %d\n", nla_get_u16(bond[IFLA_BOND_AD_ACTOR_SYS_PRIO]));
+			if (bond[IFLA_BOND_SLAVE_LIST]) {
+				nla_for_each_nested(port, bond[IFLA_BOND_SLAVE_LIST], i) {
+					parse_slave(port);
+				}
+			} else
+				printf("No port list(\n");
+
 		} else
 			printf("NO INFO bond\n");
 	}
@@ -352,8 +364,9 @@ int _fill_default_info(struct nl_msg *msg, const char *ifname)
 
 		data = nla_nest_start(msg, IFLA_INFO_DATA);
 		{
-			nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LOADBALANCE);
+			nla_put_u8(msg, IFLA_BOND_MODE, LAG_MODE_LACP);
 			nla_put_u32(msg, IFLA_BOND_MIIMON, LAG_DEFAULT_MIIMON);
+			nla_put_u8(msg, IFLA_BOND_AD_SELECT, 3);
 		}
 		nla_nest_end(msg, data);
 	}
@@ -424,7 +437,7 @@ int nl_talk(struct bond *bond, struct nl_msg *msg)
 
 	ret = nl_recvmsgs_default(bond->sock);
 	if (ret < 0) {
-		printf("Failed to recv NL mesgs: %s\n", nl_geterror(ret));
+		printf("ERROR: Failed to recv NL mesgs: %s\n", nl_geterror(ret));
 		return ret;
 	}
 
@@ -547,6 +560,10 @@ int main(void)
 		goto on_error;
 	}
 
+	ret = create_bond(bond, "bond0");
+	if (ret < 0)
+		printf("ERROR: Failed to create bond\n");
+
 	// читаем и разбираем сообщения из сокета
 	while (1) {
 		clock_t t, t0;
@@ -555,8 +572,6 @@ int main(void)
 		t0 = clock();
 
 		get_state(bond, "bond0");
-		get_state(bond, "enp29s0");
-		get_state(bond, "enp56s0f4u1");
 
 		t = clock();
 		printf("get info from one port: %f\n", (double)(t - t0)/CLOCKS_PER_SEC);
